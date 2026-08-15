@@ -1,0 +1,41 @@
+{
+  "name": "dsh-route-certificate",
+  "version": "0.0.1-local.20260814.1",
+  "description": "Community RouteCertificate observer bundle for DeepSeek Harness developer preview.",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./testing": "./testing.js"
+  },
+  "files": [
+    "index.js",
+    "testing.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "pack:local": "npm pack --pack-destination ../artifacts"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "routecertificate"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

@@ -1,0 +1,30 @@
+# Reference only: this file is not loaded by the published package.
+# Copy it into an isolated experimental bundle and replace every placeholder.
+# Leaving a placeholder or a false runtime claim must fail closed.
+- insert:
+    - id: route-certificate-deepseek-harness
+      name: dsh-route-certificate
+      config:
+        mode: observe
+        command: /ABSOLUTE/PATH/TO/YOUR/ROUTECERTIFICATE/VALIDATOR
+        args: []
+        outputDir: /ABSOLUTE/PATH/TO/ADAPTER-OWNED/RECEIPTS
+        artifactRoots: []
+        policyId: REPLACE_WITH_POLICY_ID
+        policyDigest: sha256:REPLACE_WITH_64_LOWERCASE_HEX
+        timeoutMs: 30000
+        disposeTimeoutMs: 5000
+        receiptClaimWaitMs: 1000
+        receiptClaimStaleMs: 120000
+        maxInputBytes: 8388608
+        maxOutputBytes: 1048576
+        maxEvents: 2000
+        maxArtifacts: 32
+        maxArtifactBytes: 16777216
+        awaitOnFlush: true
+        requireCertificate: false
+        allowUnsupportedHarness: false
+        actualHarnessCommit: REPLACE_WITH_ACTUAL_HARNESS_COMMIT
+        actualHarnessPackageVersion: REPLACE_WITH_ACTUAL_HARNESS_PACKAGE_VERSION
+        expectedHarnessCommit: 47f943859bef60e4160492346772ded9b24f765a
+        expectedHarnessPackageVersion: 0.1.0-rc.5

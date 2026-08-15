@@ -1,0 +1,21 @@
+- insert:
+    - id: route-certificate-deepseek-harness
+      name: dsh-route-certificate
+      config:
+        mode: disabled
+        command: null
+        args: []
+        outputDir: null
+        policyId: local-default
+        policyDigest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+        timeoutMs: 30000
+        maxInputBytes: 8388608
+        maxOutputBytes: 1048576
+        maxEvents: 2000
+        maxArtifacts: 32
+        maxArtifactBytes: 16777216
+        awaitOnFlush: true
+        requireCertificate: false
+        allowUnsupportedHarness: false
+        expectedHarnessCommit: 47f943859bef60e4160492346772ded9b24f765a
+        expectedHarnessPackageVersion: 0.1.0-rc.5
