@@ -29,7 +29,7 @@ Schema: `routecertificate.deepseek-harness.request/v1`.
 
 Canonicalization is adapter-owned sorted-key JSON over UTF-8, not claimed as RFC 8785.
 
-Default caps: 2,000 events; 8 MiB input; 1 MiB output; 32 artifacts; 16 MiB per artifact. Oversize or omitted evidence never becomes a pass.
+Default caps: 2,000 events; 8 MiB input; 1 MiB output per stream; 32 artifacts; 16 MiB per artifact. Event prefix collection and cold reconciliation stop after the needed prefix or `maxEvents + 1` entries; count overflow persists `preflight_event_count_oversize`, with null turn-end fields when a generic cold boundary is nonterminal. A bounded lower-bound walk rejects definitely oversized event JSON before cloning, and the later canonical request byte check remains exact. The Node child collector retains no more than `maxOutputBytes + 1` aggregate bytes per stream; either retained bytes above the cap or any collector loss/truncation signal is `validator_output_oversize`. Artifact oversize is decided from open-handle metadata when possible, otherwise with at most a `maxArtifactBytes + 1` read. Oversize or omitted evidence never becomes a pass.
 
 ## Response
 
@@ -61,7 +61,7 @@ Stable receipt key binds session id, turn, terminal sequence, evidence digest an
 - No certificate is appended to session logs or model prompts; there is no global gate.
 - Raw event/error objects stay only in bounded validator evidence. Persisted subjects omit messages, arbitrary nesting and secret-shaped data.
 - Child environment is scrubbed by default and forwards only explicit non-secret values.
-- Artifact paths are realpath-checked under component-aware active-platform allowlist roots before and after read, final-component `O_NOFOLLOW` is requested, bytes are bounded/hashed, and handle/path metadata is compared. This is best-effort race detection, not an `openat` hostile-concurrency guarantee.
+- Artifact paths are realpath-checked under component-aware active-platform allowlist roots before and after read, final-component `O_NOFOLLOW` is requested, bytes are bounded/hashed, and handle/path metadata is compared. Omitted artifacts are represented to the validator explicitly; receipts retain only path-free bounded omission facts (`eventSeq`, stable `reason`, and optional `size`). A bound validator pass over omitted artifact evidence is downgraded to `indeterminate`. This is best-effort race detection, not an `openat` hostile-concurrency guarantee.
 
 ## Failure semantics
 

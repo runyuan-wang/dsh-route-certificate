@@ -99,6 +99,8 @@ Override `command`, `policyId`, and `policyDigest` together. `outputDir: null` k
 
 Validation and receipt work is additive. In advisory mode, validator or receipt-persistence failure cannot replace the raw Harness result or create an unhandled observer rejection. Raw terminal error objects stay in the validator's bounded evidence input; the persisted receipt subject keeps only an allowlisted terminal kind plus an optional bounded status/stable code.
 
+Large-log decisions are bounded by the configured limits. Event admission and cold reconciliation inspect only the needed terminal prefix and at most `maxEvents + 1` entries to detect count overflow; overflow is a persisted `preflight_event_count_oversize` indeterminate receipt, and a nonterminal cold-history boundary is not mislabeled as a turn end. Definitely oversized event JSON is rejected before cloning, and the exact canonical request must still fit `maxInputBytes`. The Node fallback retains at most `maxOutputBytes + 1` bytes per output stream, while an official collector's loss/truncation signal is also authoritative; either condition produces `indeterminate`, never a parsed pass. Artifact oversize is decided from open-handle metadata or a read of at most `maxArtifactBytes + 1`; the artifact is left untouched, the request uses an omitted descriptor, and the receipt records only path-free `eventSeq`/`reason`/`size` omission facts. Omitted evidence cannot become a pass. The original Harness events, result, and declared artifact remain unmodified and recoverable outside the separate receipt.
+
 ## License
 
 Apache-2.0. This package is not official DeepSeek software.

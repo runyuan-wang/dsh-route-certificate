@@ -81,7 +81,7 @@ export function createRouteCertificateObserver(ctx, rawConfig, overrides = {}) {
     let preliminary
     let preliminaryKey
     try {
-      snapshot = Array.from(session.events ?? []).slice(0, event.seq + 1)
+      snapshot = collectEventPrefix(session.events ?? [], event, config.maxEvents)
       preliminary = buildPreliminaryRequest(config, session, event, snapshot)
       preliminaryKey = idempotencyKey(preliminary)
     } catch (error) {
@@ -122,14 +122,41 @@ export function createRouteCertificateObserver(ctx, rawConfig, overrides = {}) {
     return undefined
   }
 
+  function dispatchPreflightFailure(session, event, source, error) {
+    const sessionId = sessionIdOf(session)
+    const prior = pendingBySession.get(sessionId) ?? Promise.resolve()
+    const settledPrior = config.requireCertificate ? prior : prior.catch(() => undefined)
+    const task = settledPrior
+      .then(() => persistPreflightFailure({ config, receiptStore, session, event, source, error }))
+      .then((receipt) => {
+        if (receipt?.idempotencyKey) completedKeys.add(receipt.idempotencyKey)
+        return receipt
+      })
+      .finally(() => {
+        if (pendingBySession.get(sessionId) === task) pendingBySession.delete(sessionId)
+      })
+    pendingBySession.set(sessionId, task)
+    if (config.requireCertificate) return task
+    void task.catch(() => undefined)
+    return undefined
+  }
+
   function reconcile(session) {
     if (!accepting || config.mode === 'disabled') return
     const requiredTasks = []
-    const events = Array.from(session.events ?? [])
-    for (const event of events) {
-      if (event?.type !== 'turn/end') continue
-      const task = dispatch(session, event, 'session/created')
-      if (task) requiredTasks.push(task)
+    let eventCount = 0
+    for (const event of session.events ?? []) {
+      eventCount += 1
+      if (eventCount > config.maxEvents) {
+        const error = Object.assign(new Error('event_count_oversize'), { code: 'event_count_oversize' })
+        const task = dispatchPreflightFailure(session, event, 'session/created', error)
+        if (task) requiredTasks.push(task)
+        break
+      }
+      if (event?.type === 'turn/end') {
+        const task = dispatch(session, event, 'session/created')
+        if (task) requiredTasks.push(task)
+      }
     }
     if (requiredTasks.length > 0) return Promise.all(requiredTasks)
   }
@@ -413,14 +440,15 @@ function detectHarnessRuntime({ packageUrl = import.meta.url } = {}) {
 }
 
 function buildPreflightRequest(config, session, endEvent, reason) {
+  const isTurnEnd = endEvent?.type === 'turn/end'
   const body = {
     schema: REQUEST_SCHEMA,
     harness: harnessDescriptor(config),
     subject: {
       sessionId: sessionIdOf(session),
       turn: null,
-      turnEndSeq: Number.isSafeInteger(endEvent?.seq) ? endEvent.seq : null,
-      turnEndTime: endEvent?.time ?? null,
+      turnEndSeq: isTurnEnd && Number.isSafeInteger(endEvent?.seq) ? endEvent.seq : null,
+      turnEndTime: isTurnEnd ? endEvent?.time ?? null : null,
       harnessReason: null,
       preflightReason: reason,
     },
@@ -436,9 +464,34 @@ function buildPreflightRequest(config, session, endEvent, reason) {
   return { ...body, requestId: requestIdFor(body) }
 }
 
+function collectEventPrefix(source, endEvent, maxEvents) {
+  if (!Number.isSafeInteger(endEvent?.seq) || endEvent.seq < 0 || !Number.isSafeInteger(endEvent.seq + 1)) {
+    throw new Error('event_sequence_invalid')
+  }
+  const targetLength = endEvent.seq + 1
+  const events = []
+  const iterator = source[Symbol.iterator]()
+  let exhausted = false
+  try {
+    while (events.length < targetLength) {
+      const next = iterator.next()
+      if (next.done) {
+        exhausted = true
+        break
+      }
+      events.push(next.value)
+      if (events.length > maxEvents) throw new Error('event_count_oversize')
+    }
+  } finally {
+    if (!exhausted && typeof iterator.return === 'function') iterator.return()
+  }
+  return events
+}
+
 function buildPreliminaryRequest(config, session, endEvent, snapshot) {
+  if (snapshot.length > config.maxEvents) throw new Error('event_count_oversize')
+  assertJsonByteLowerBound(snapshot, config.maxInputBytes, 'request_oversize')
   const events = snapshot.map(cloneJson)
-  if (events.length > config.maxEvents) throw new Error('event_count_oversize')
   const sessionId = sessionIdOf(session)
   const subject = {
     sessionId,
@@ -487,6 +540,8 @@ function validateTransportAndResponse(config, request, transport, source) {
   const stderr = String(transport?.stderr ?? '')
   const stdoutBytes = Buffer.byteLength(stdout)
   const stderrBytes = Buffer.byteLength(stderr)
+  const stdoutTruncated = Boolean(transport?.stdoutTruncated)
+  const stderrTruncated = Boolean(transport?.stderrTruncated)
   const base = receiptBase(config, request, {
     source,
     transport: {
@@ -496,11 +551,11 @@ function validateTransportAndResponse(config, request, transport, source) {
       stderrBytes,
       stdoutDigest: sha256Text(stdout),
       stderrDigest: sha256Text(stderr),
-      stdoutTruncated: Boolean(transport?.stdoutTruncated),
-      stderrTruncated: Boolean(transport?.stderrTruncated),
+      stdoutTruncated,
+      stderrTruncated,
     },
   })
-  if (stdoutBytes > config.maxOutputBytes || stderrBytes > config.maxOutputBytes) {
+  if (stdoutBytes > config.maxOutputBytes || stderrBytes > config.maxOutputBytes || stdoutTruncated || stderrTruncated) {
     return { ...base, outcome: 'indeterminate', reason: 'validator_output_oversize', userSummary: 'RouteCertificate validation indeterminate: validator output exceeded bounds.' }
   }
   if (containsSecretLike(stdout) || containsSecretLike(stderr)) {
@@ -518,6 +573,15 @@ function validateTransportAndResponse(config, request, transport, source) {
   const responseError = validateResponse(request, parsed)
   if (responseError) {
     return { ...base, outcome: 'indeterminate', reason: responseError, userSummary: 'RouteCertificate validation indeterminate: validator response did not match the request.' }
+  }
+  if (parsed.outcome === 'pass' && boundedEvidenceOmissions(request).length > 0) {
+    return {
+      ...base,
+      outcome: 'indeterminate',
+      reason: 'artifact_evidence_incomplete',
+      diagnosticsDigest: digestJson(parsed.diagnostics ?? []),
+      userSummary: 'RouteCertificate validation indeterminate: artifact evidence was omitted by a bounded adapter check.',
+    }
   }
   return {
     ...base,
@@ -617,9 +681,24 @@ function indeterminateReceiptFromError(config, request, error, reason) {
   }
 }
 
+function boundedEvidenceOmissions(request) {
+  const artifacts = Array.isArray(request?.evidence?.artifacts) ? request.evidence.artifacts : []
+  const omissions = []
+  for (const row of artifacts) {
+    if (!isPlainObject(row) || row.omitted !== true) continue
+    omissions.push({
+      eventSeq: Number.isSafeInteger(row.eventSeq) ? row.eventSeq : null,
+      reason: typeof row.reason === 'string' && /^[a-z0-9_]{1,80}$/.test(row.reason) ? row.reason : 'artifact_omitted',
+      size: Number.isSafeInteger(row.size) && row.size >= 0 ? row.size : null,
+    })
+  }
+  return omissions
+}
+
 function receiptBase(config, request, extra = {}) {
   const evidenceDigest = digestJson(request.evidence)
   const key = idempotencyKey({ ...request, evidenceDigest })
+  const omissions = boundedEvidenceOmissions(request)
   return {
     schema: RECEIPT_SCHEMA,
     createdAt: new Date().toISOString(),
@@ -631,6 +710,7 @@ function receiptBase(config, request, extra = {}) {
     subject: request.subject,
     requireCertificate: config.requireCertificate,
     rawDiagnosticsSeparated: true,
+    ...(omissions.length > 0 ? { evidenceOmissions: omissions } : {}),
     ...extra,
   }
 }
@@ -931,11 +1011,21 @@ function createNodeSubprocessRunner(config) {
     let stdoutTruncated = false
     let stderrTruncated = false
     const append = (current, chunk, stream) => {
-      const next = Buffer.concat([current, chunk])
-      if (next.length <= config.maxOutputBytes + 1) return next
-      if (stream === 'stdout') stdoutTruncated = true
-      else stderrTruncated = true
-      return next.subarray(0, config.maxOutputBytes + 1)
+      const limit = config.maxOutputBytes + 1
+      const markTruncated = () => {
+        if (stream === 'stdout') stdoutTruncated = true
+        else stderrTruncated = true
+      }
+      if (current.length >= limit) {
+        markTruncated()
+        return current
+      }
+      const remaining = limit - current.length
+      if (chunk.length > remaining) {
+        markTruncated()
+        return Buffer.concat([current, chunk.subarray(0, remaining)], limit)
+      }
+      return Buffer.concat([current, chunk], current.length + chunk.length)
     }
     const abort = () => {
       child.kill('SIGTERM')
@@ -968,7 +1058,9 @@ async function readCollected(handle, stream) {
     const out = await reader.readFrom(0)
     return { text: out.text ?? '', truncated: Boolean(out.lossy) }
   }
-  if (typeof reader.text === 'string') return reader
+  if (typeof reader.text === 'string') {
+    return { text: reader.text, truncated: Boolean(reader.truncated ?? reader.lossy) }
+  }
   return { text: '', truncated: false }
 }
 
@@ -994,6 +1086,74 @@ function currentSessions(ctx) {
   if (typeof store.values === 'function') return Array.from(store.values())
   if (Array.isArray(store.sessions)) return store.sessions
   return []
+}
+
+function assertJsonByteLowerBound(value, max, code) {
+  let total = 0
+  const active = new WeakSet()
+  const stack = [{ kind: 'value', value }]
+  const add = (amount) => {
+    if (!Number.isSafeInteger(amount) || amount < 0 || amount > max - total) throw new Error(code)
+    total += amount
+  }
+  const ownEntries = function* (object) {
+    for (const key in object) {
+      if (Object.prototype.hasOwnProperty.call(object, key)) yield [key, object[key]]
+    }
+  }
+
+  while (stack.length > 0) {
+    const frame = stack.pop()
+    if (frame.kind === 'exit') {
+      active.delete(frame.value)
+      continue
+    }
+    if (frame.kind === 'array') {
+      if (frame.index >= frame.value.length) continue
+      stack.push({ ...frame, index: frame.index + 1 })
+      stack.push({ kind: 'value', value: frame.value[frame.index] })
+      continue
+    }
+    if (frame.kind === 'object') {
+      const next = frame.iterator.next()
+      if (next.done) continue
+      const [key, child] = next.value
+      const childType = typeof child
+      const omitted = childType === 'undefined' || childType === 'function' || childType === 'symbol'
+        || (child !== null && childType === 'object' && typeof child.toJSON === 'function')
+      if (omitted) {
+        stack.push(frame)
+        continue
+      }
+      add(key.length + 3 + (frame.first ? 0 : 1))
+      stack.push({ ...frame, first: false })
+      stack.push({ kind: 'value', value: child })
+      continue
+    }
+
+    const current = frame.value
+    if (current === null) {
+      add(4)
+    } else if (typeof current === 'string') {
+      add(current.length + 2)
+    } else if (typeof current === 'boolean') {
+      add(current ? 4 : 5)
+    } else if (typeof current === 'number' || typeof current === 'bigint') {
+      add(1)
+    } else if (typeof current === 'object') {
+      if (typeof current.toJSON === 'function') continue
+      if (active.has(current)) continue
+      active.add(current)
+      stack.push({ kind: 'exit', value: current })
+      if (Array.isArray(current)) {
+        add(2 + Math.max(0, current.length - 1))
+        stack.push({ kind: 'array', value: current, index: 0 })
+      } else {
+        add(2)
+        stack.push({ kind: 'object', iterator: ownEntries(current), first: true })
+      }
+    }
+  }
 }
 
 function assertByteCap(bytes, max, code) {
