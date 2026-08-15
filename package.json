@@ -1,7 +1,7 @@
 {
   "name": "dsh-route-certificate",
-  "version": "0.0.1-local.20260814.1",
-  "description": "Community RouteCertificate observer bundle for DeepSeek Harness developer preview.",
+  "version": "0.0.3-universal.20260815",
+  "description": "Installable RouteCertificate advisory observer bundle for DeepSeek Harness users.",
   "type": "module",
   "main": "./index.js",
   "exports": {
@@ -9,10 +9,14 @@
     "./testing": "./testing.js"
   },
   "files": [
+    "bin/",
     "index.js",
+    "policy.js",
     "testing.js",
     "cordis.patch.yml",
-    "README.md"
+    "CONTRACT.md",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "test": "node --test tests/*.test.js",

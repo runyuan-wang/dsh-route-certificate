@@ -201,11 +201,108 @@ test('cancellation and disposal abort active validation and remove listeners', a
 test('unsupported platform and inactive observe mode fail closed', async () => {
   const root = await tempRoot()
   try {
-    assert.throws(() => createRouteCertificateObserver(makeCtx(null), config(root)), /requires command or injected runner/)
     assert.throws(() => createRouteCertificateObserver(makeCtx(null), config(root, { command: 'echo hi' })), /shell string/)
     assert.throws(() => createRouteCertificateObserver(makeCtx(null), config(root, { policyDigest: 'bad' }), { runner: async () => ({}) }), /policyDigest/)
-    assert.throws(() => createRouteCertificateObserver(makeCtx(null), config(root, { expectedHarnessPackageVersion: '0.1.0-rc.6' }), { runner: async () => ({}) }), /unsupported DeepSeek Harness package version/)
-    assert.doesNotThrow(() => createRouteCertificateObserver(makeCtx(null), config(root, { expectedHarnessPackageVersion: '0.1.0-rc.6', allowUnsupportedHarness: true }), { runner: async () => ({}) }))
+    assert.throws(() => createRouteCertificateObserver(makeCtx(null), config(root, { expectedHarnessPackageVersion: '0.1.0-rc.5' }), { runner: async () => ({}) }), /unsupported DeepSeek Harness package version/)
+    assert.doesNotThrow(() => createRouteCertificateObserver(makeCtx(null), config(root, { expectedHarnessPackageVersion: '0.1.0-rc.5', allowUnsupportedHarness: true }), { runner: async () => ({}) }))
+    assert.throws(
+      () => createRouteCertificateObserver(makeCtx(null), config(root, { timeoutMs: 100, receiptClaimWaitMs: 200, receiptClaimStaleMs: 200 }), { runner: async () => ({}) }),
+      /receiptClaimStaleMs must exceed/,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('persisted terminal summary excludes raw secret and oversized error payloads', async () => {
+  const root = await tempRoot()
+  try {
+    const event = turnEnd(0, {
+      turn: 1,
+      reason: {
+        kind: 'error',
+        error: {
+          status: 503,
+          code: 'sk-not-a-safe-code',
+          message: `Bearer ${'x'.repeat(256)}`,
+          nested: { authorization: 'private-value', detail: 'y'.repeat(5000) },
+        },
+      },
+    })
+    const session = makeSession([event])
+    const request = __testing.buildPreliminaryRequest(__testing.normalizeConfig(config(root)), session, event, session.events)
+    assert.deepEqual(request.subject.harnessReason, { kind: 'error', status: 503 })
+    const persistedSubject = __testing.canonicalString(request.subject)
+    assert.doesNotMatch(persistedSubject, /Bearer|authorization|private-value|x{20}|y{20}/)
+
+    const oversizedKind = turnEnd(1, { turn: 2, reason: { kind: 'z'.repeat(1000) } })
+    const second = makeSession([event, oversizedKind])
+    const secondRequest = __testing.buildPreliminaryRequest(__testing.normalizeConfig(config(root)), second, oversizedKind, second.events)
+    assert.deepEqual(secondRequest.subject.harnessReason, { kind: 'unknown' })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('component-aware containment handles POSIX and Windows roots', () => {
+  const { posix, win32 } = __testing.pathApis
+  assert.equal(__testing.isPathWithin('/allowed', '/allowed/nested/file.txt', posix), true)
+  assert.equal(__testing.isPathWithin('/allowed', '/allowed-other/file.txt', posix), false)
+  assert.equal(__testing.isPathWithin('C:\\allowed', 'C:\\allowed\\nested\\file.txt', win32), true)
+  assert.equal(__testing.isPathWithin('C:\\allowed', 'C:\\allowed-other\\file.txt', win32), false)
+  assert.equal(__testing.isPathWithin('C:\\allowed', 'D:\\allowed\\file.txt', win32), false)
+})
+
+test('advisory event dispatch contains receipt-store failure without altering raw session flow', async () => {
+  const root = await tempRoot()
+  const unhandled = []
+  const onUnhandled = (reason) => { unhandled.push(reason) }
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    const event = turnEnd(0)
+    const session = makeSession([event])
+    const ctx = makeCtx(null)
+    const receiptStore = {
+      exists: async () => false,
+      read: async () => undefined,
+      claim: async () => ({ owned: true, token: 'claim' }),
+      release: async () => {},
+      write: async () => { throw new Error('receipt disk unavailable') },
+    }
+    const observer = createRouteCertificateObserver(ctx, config(root), {
+      receiptStore,
+      runner: async ({ request }) => ({ exitCode: 0, signal: null, stdout: JSON.stringify(responseFor(request)), stderr: '' }),
+    })
+    observer.start()
+    await ctx.emit('session/event', session, event)
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assert.deepEqual(session.events, [event])
+    assert.deepEqual(unhandled, [])
+    await observer.dispose()
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('requireCertificate preserves receipt-store failure propagation', async () => {
+  const root = await tempRoot()
+  try {
+    const event = turnEnd(0)
+    const session = makeSession([event])
+    const receiptStore = {
+      exists: async () => false,
+      read: async () => undefined,
+      claim: async () => ({ owned: true, token: 'claim' }),
+      release: async () => {},
+      write: async () => { throw new Error('receipt disk unavailable') },
+    }
+    const observer = createRouteCertificateObserver(makeCtx(null), config(root, { requireCertificate: true }), {
+      receiptStore,
+      runner: async ({ request }) => ({ exitCode: 0, signal: null, stdout: JSON.stringify(responseFor(request)), stderr: '' }),
+    })
+    await assert.rejects(observer.enqueue(session, event, 'required'), /receipt disk unavailable/)
+    await observer.dispose()
   } finally {
     await rm(root, { recursive: true, force: true })
   }

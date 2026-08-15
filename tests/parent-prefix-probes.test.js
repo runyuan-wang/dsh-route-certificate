@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -52,7 +53,32 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-test('observe mode requires explicit actual Harness runtime attestation', async () => {
+test('automatic runtime detection reads the installed official dsh package surface', async () => {
+  const root = await tempRoot()
+  try {
+    const packageRoot = join(root, 'profiles', 'routecert', 'node_modules', 'dsh-route-certificate')
+    const dshRoot = join(root, 'profiles', 'routecert', 'node_modules', '@deepseek-ai', 'dsh')
+    await mkdir(packageRoot, { recursive: true })
+    await mkdir(dshRoot, { recursive: true })
+    await writeFile(join(dshRoot, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.0-rc.6' }))
+    const packageUrl = new URL(`file://${join(packageRoot, 'index.js')}`).href
+    const runtime = __testing.detectHarnessRuntime({ packageUrl })
+    assert.equal(runtime.packageVersion, '0.1.0-rc.6')
+    assert.equal(__testing.defaultReceiptDir(packageUrl), join(root, 'profiles', 'routecert', '.route-certificate'))
+    const cfg = __testing.normalizeConfig({
+      mode: 'observe',
+      policyDigest: 'sha256:2222222222222222222222222222222222222222222222222222222222222222',
+    }, { packageUrl })
+    assert.equal(cfg.outputDir, join(root, 'profiles', 'routecert', '.route-certificate'))
+    assert.equal(cfg.actualHarnessPackageVersion, '0.1.0-rc.6')
+    const pnpmPackageUrl = new URL(`file://${join(root, 'profiles', 'routecert', 'node_modules', '.pnpm', 'dsh-route-certificate@file+artifact', 'node_modules', 'dsh-route-certificate', 'index.js')}`).href
+    assert.equal(__testing.defaultReceiptDir(pnpmPackageUrl), join(root, 'profiles', 'routecert', '.route-certificate'))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('observe mode fails closed when official dsh package version is unsupported', async () => {
   const root = await tempRoot()
   try {
     assert.throws(
@@ -60,9 +86,78 @@ test('observe mode requires explicit actual Harness runtime attestation', async 
         mode: 'observe',
         outputDir: root,
         policyDigest: 'sha256:2222222222222222222222222222222222222222222222222222222222222222',
+        actualHarnessPackageVersion: '0.1.0-rc.7',
       }, { runner: async () => ({}) }),
-      /actual Harness runtime attestation/i,
+      /unsupported actual DeepSeek Harness package version/i,
     )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('bundled local validator applies the bounded terminal-envelope policy', async () => {
+  const root = await tempRoot()
+  try {
+    const cfg = config(root, {
+      policyId: __testing.BUNDLED_POLICY_SPEC.policyId,
+      policyDigest: __testing.BUNDLED_POLICY_DIGEST,
+    })
+    for (const [kind, expected] of [['completed', 'pass'], ['error', 'fail'], ['interrupted', 'indeterminate'], ['max-tokens', 'indeterminate']]) {
+      const event = turnEnd(0, { turn: 1, reason: { kind } })
+      const session = makeSession([event], `bundled-${kind}`)
+      const request = __testing.buildPreliminaryRequest(__testing.normalizeConfig(cfg), session, event, session.events)
+      const stdout = execFileSync(process.execPath, [__testing.defaultValidatorCommand()], {
+        input: __testing.canonicalString(request),
+        maxBuffer: 1024 * 1024,
+        encoding: 'utf8',
+      })
+      const response = JSON.parse(stdout)
+      assert.equal(response.schema, __testing.RESPONSE_SCHEMA)
+      assert.equal(response.requestId, request.requestId)
+      assert.equal(response.outcome, expected, kind)
+      assert.equal(response.policyDigest, __testing.BUNDLED_POLICY_DIGEST)
+      assert.equal(response.certificate.scope, 'terminal-envelope-only')
+      assert.equal(response.certificate.semanticJudgment, false)
+      assert.equal(response.certificate.terminalKind, kind)
+      assert.equal(__testing.validateResponse(request, response), null)
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('bundled policy rejects request, prefix, and terminal binding tampering', async () => {
+  const root = await tempRoot()
+  try {
+    const cfg = config(root, {
+      policyId: __testing.BUNDLED_POLICY_SPEC.policyId,
+      policyDigest: __testing.BUNDLED_POLICY_DIGEST,
+    })
+    const event = turnEnd(0, { turn: 1, reason: { kind: 'completed' } })
+    const session = makeSession([event], 'tamper-session')
+    const original = __testing.buildPreliminaryRequest(__testing.normalizeConfig(cfg), session, event, session.events)
+    const rebind = (request) => {
+      const body = JSON.parse(JSON.stringify(request))
+      delete body.requestId
+      return { ...body, requestId: __testing.digestJson(body) }
+    }
+    const mutations = [
+      ['request id', { ...original, requestId: `sha256:${'0'.repeat(64)}` }, 'request-policy-binding'],
+      ['prefix digest', rebind({ ...original, evidence: { ...original.evidence, sessionPrefixDigest: `sha256:${'0'.repeat(64)}` } }), 'event-prefix-binding'],
+      ['terminal time', rebind({ ...original, subject: { ...original.subject, turnEndTime: original.subject.turnEndTime + 1 } }), 'terminal-envelope'],
+      ['event range', rebind({ ...original, evidence: { ...original.evidence, eventRange: { fromSeq: 1, throughSeq: 0 } } }), 'event-prefix-binding'],
+    ]
+    for (const [name, request, failedCheck] of mutations) {
+      const stdout = execFileSync(process.execPath, [__testing.defaultValidatorCommand()], {
+        input: __testing.canonicalString(request),
+        maxBuffer: 1024 * 1024,
+        encoding: 'utf8',
+      })
+      const response = JSON.parse(stdout)
+      assert.equal(response.outcome, 'fail', name)
+      assert.equal(response.checks.find((row) => row.id === failedCheck).outcome, 'fail', name)
+      assert.equal(__testing.validateResponse(request, response), null, name)
+    }
   } finally {
     await rm(root, { recursive: true, force: true })
   }

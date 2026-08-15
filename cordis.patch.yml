@@ -2,12 +2,12 @@
     - id: route-certificate-deepseek-harness
       name: dsh-route-certificate
       config:
-        mode: disabled
+        mode: observe
         command: null
         args: []
         outputDir: null
-        policyId: local-default
-        policyDigest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+        policyId: terminal-envelope-default
+        policyDigest: sha256:d973daa08041bbe7423bd5602a629a7c87b28c692e5e04289a5c6291880f7f1d
         timeoutMs: 30000
         maxInputBytes: 8388608
         maxOutputBytes: 1048576
@@ -18,4 +18,4 @@
         requireCertificate: false
         allowUnsupportedHarness: false
         expectedHarnessCommit: 47f943859bef60e4160492346772ded9b24f765a
-        expectedHarnessPackageVersion: 0.1.0-rc.5
+        expectedHarnessPackageVersion: 0.1.0-rc.6

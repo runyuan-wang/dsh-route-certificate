@@ -1,9 +1,13 @@
 import Schema from '@deepseek-ai/schemastery'
+import { spawn } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
+import { existsSync, readFileSync } from 'node:fs'
 import { link, mkdir, open, readFile, realpath, rename, stat, symlink, unlink, writeFile } from 'node:fs/promises'
 import { constants as fsConstants } from 'node:fs'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import * as pathModule from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { BUNDLED_POLICY_DIGEST, BUNDLED_POLICY_SPEC, sanitizeTerminalReason } from './policy.js'
 
 export const name = 'route-certificate-deepseek-harness'
 export const inject = ['sessions']
@@ -11,7 +15,8 @@ export const inject = ['sessions']
 const SUPPORTED_HARNESS = Object.freeze({
   repository: 'https://github.com/deepseek-ai/deepseek-harness',
   commit: '47f943859bef60e4160492346772ded9b24f765a',
-  packageVersion: '0.1.0-rc.5',
+  packageVersion: '0.1.0-rc.6',
+  packageVersions: ['0.1.0-rc.6'],
   sessionFormatVersion: 0,
 })
 
@@ -24,13 +29,13 @@ const SECRET_KEY_RE = /(?:key|password|passwd|secret|token|authorization)/i
 const SECRET_VALUE_RE = /(-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|\bBearer\s+[A-Za-z0-9._~+/=-]{8,}|\bsk-[A-Za-z0-9_-]{12,}|\bgh[pousr]_[A-Za-z0-9]{20,}|\bxox[baprs]-[A-Za-z0-9-]{10,}|\bAKIA[A-Z0-9]{16}\b)/i
 
 export const Config = Schema.object({
-  mode: Schema.union(['disabled', 'observe']).default('disabled'),
+  mode: Schema.union(['disabled', 'observe']).default('observe'),
   command: Schema.union([Schema.string(), Schema.const(null)]).default(null),
   args: Schema.array(Schema.string()).default([]),
   outputDir: Schema.union([Schema.string(), Schema.const(null)]).default(null),
   artifactRoots: Schema.array(Schema.string()).default([]),
-  policyId: Schema.string().default('local-default'),
-  policyDigest: Schema.string().default('sha256:0000000000000000000000000000000000000000000000000000000000000000'),
+  policyId: Schema.string().default(BUNDLED_POLICY_SPEC.policyId),
+  policyDigest: Schema.string().default(BUNDLED_POLICY_DIGEST),
   timeoutMs: Schema.number().default(30000),
   disposeTimeoutMs: Schema.number().default(5000),
   receiptClaimWaitMs: Schema.number().default(35000),
@@ -43,7 +48,6 @@ export const Config = Schema.object({
   awaitOnFlush: Schema.boolean().default(true),
   requireCertificate: Schema.boolean().default(false),
   allowUnsupportedHarness: Schema.boolean().default(false),
-  actualHarnessCommit: Schema.union([Schema.string(), Schema.const(null)]).default(null),
   actualHarnessPackageVersion: Schema.union([Schema.string(), Schema.const(null)]).default(null),
   expectedHarnessCommit: Schema.string().default(SUPPORTED_HARNESS.commit),
   expectedHarnessPackageVersion: Schema.string().default(SUPPORTED_HARNESS.packageVersion),
@@ -51,12 +55,14 @@ export const Config = Schema.object({
 
 export function apply(ctx, config) {
   const observer = createRouteCertificateObserver(ctx, config)
-  observer.start()
-  ctx.effect(() => observer.dispose())
+  ctx.effect(() => {
+    observer.start()
+    return () => observer.dispose()
+  })
 }
 
 export function createRouteCertificateObserver(ctx, rawConfig, overrides = {}) {
-  const config = normalizeConfig(rawConfig)
+  const config = normalizeConfig(rawConfig, { ctx, runtime: overrides.runtime, packageUrl: import.meta.url })
   validateConfig(config, overrides)
   const runner = overrides.runner ?? createSubprocessRunner(ctx, config)
   const receiptStore = overrides.receiptStore ?? createFileReceiptStore(config.outputDir)
@@ -109,12 +115,23 @@ export function createRouteCertificateObserver(ctx, rawConfig, overrides = {}) {
     return task
   }
 
+  function dispatch(session, event, source) {
+    const task = enqueue(session, event, source)
+    if (config.requireCertificate) return task
+    void task.catch(() => undefined)
+    return undefined
+  }
+
   function reconcile(session) {
     if (!accepting || config.mode === 'disabled') return
+    const requiredTasks = []
     const events = Array.from(session.events ?? [])
     for (const event of events) {
-      if (event?.type === 'turn/end') void enqueue(session, event, 'session/created')
+      if (event?.type !== 'turn/end') continue
+      const task = dispatch(session, event, 'session/created')
+      if (task) requiredTasks.push(task)
     }
+    if (requiredTasks.length > 0) return Promise.all(requiredTasks)
   }
 
   async function flush(session) {
@@ -130,11 +147,14 @@ export function createRouteCertificateObserver(ctx, rawConfig, overrides = {}) {
     start() {
       if (config.mode === 'disabled') return
       unlisteners = [
-        listen(ctx, 'session/event', (session, event) => { void enqueue(session, event, 'session/event') }),
-        listen(ctx, 'session/created', (session) => { reconcile(session) }),
+        listen(ctx, 'session/event', (session, event) => dispatch(session, event, 'session/event')),
+        listen(ctx, 'session/created', (session) => reconcile(session)),
         listen(ctx, 'session/flush', (session) => flush(session)),
       ].filter(Boolean)
-      for (const session of currentSessions(ctx)) reconcile(session)
+      for (const session of currentSessions(ctx)) {
+        const task = reconcile(session)
+        if (task) void task.catch(() => undefined)
+      }
     },
     async dispose() {
       accepting = false
@@ -274,15 +294,19 @@ function stableErrorCode(error, fallback) {
   return /^[a-z0-9_]{1,80}$/.test(message) ? message : fallback
 }
 
-function normalizeConfig(input = {}) {
+function normalizeConfig(input = {}, options = {}) {
+  const packageUrl = options.packageUrl ?? import.meta.url
+  const runtime = options.runtime ?? detectHarnessRuntime({ packageUrl })
+  const outputDir = input.outputDir ?? defaultReceiptDir(packageUrl)
+  const command = input.command ?? defaultValidatorCommand(packageUrl)
   return {
-    mode: input.mode ?? 'disabled',
-    command: input.command ?? null,
+    mode: input.mode ?? 'observe',
+    command,
     args: input.args ?? [],
-    outputDir: input.outputDir ?? null,
+    outputDir,
     artifactRoots: input.artifactRoots ?? [],
-    policyId: input.policyId ?? 'local-default',
-    policyDigest: input.policyDigest ?? 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+    policyId: input.policyId ?? BUNDLED_POLICY_SPEC.policyId,
+    policyDigest: input.policyDigest ?? BUNDLED_POLICY_DIGEST,
     timeoutMs: input.timeoutMs ?? 30000,
     disposeTimeoutMs: input.disposeTimeoutMs ?? 5000,
     receiptClaimWaitMs: input.receiptClaimWaitMs ?? 35000,
@@ -295,8 +319,8 @@ function normalizeConfig(input = {}) {
     awaitOnFlush: input.awaitOnFlush ?? true,
     requireCertificate: input.requireCertificate ?? false,
     allowUnsupportedHarness: input.allowUnsupportedHarness ?? false,
-    actualHarnessCommit: input.actualHarnessCommit ?? null,
-    actualHarnessPackageVersion: input.actualHarnessPackageVersion ?? null,
+    actualHarnessCommit: SUPPORTED_HARNESS.commit,
+    actualHarnessPackageVersion: runtime.packageVersion ?? input.actualHarnessPackageVersion ?? null,
     expectedHarnessCommit: input.expectedHarnessCommit ?? SUPPORTED_HARNESS.commit,
     expectedHarnessPackageVersion: input.expectedHarnessPackageVersion ?? SUPPORTED_HARNESS.packageVersion,
   }
@@ -313,12 +337,15 @@ function validateConfig(config, overrides) {
   if (config.mode === 'observe') {
     if (!config.outputDir || !isAbsolute(config.outputDir)) throw new Error('observe mode requires absolute outputDir')
     if (!config.command && !overrides.runner) throw new Error('observe mode requires command or injected runner')
-    if (typeof config.actualHarnessCommit !== 'string' || !config.actualHarnessCommit.trim() || typeof config.actualHarnessPackageVersion !== 'string' || !config.actualHarnessPackageVersion.trim()) {
-      throw new Error('observe mode requires explicit actual Harness runtime attestation (commit and package version)')
+    if (typeof config.actualHarnessPackageVersion !== 'string' || !config.actualHarnessPackageVersion.trim()) {
+      throw new Error('observe mode requires detected DeepSeek Harness package version')
     }
     if (config.command && /[\s;&|<>$`]/.test(config.command) && !isAbsolute(config.command)) throw new Error('command must be an executable path or bare name, not a shell string')
   }
   if (!DIGEST_RE.test(config.policyDigest)) throw new Error('policyDigest must be sha256:<64 lowercase hex>')
+  if (config.receiptClaimStaleMs <= Math.max(config.timeoutMs, config.receiptClaimWaitMs)) {
+    throw new Error('receiptClaimStaleMs must exceed both timeoutMs and receiptClaimWaitMs')
+  }
   if (!config.allowUnsupportedHarness) {
     if (config.expectedHarnessCommit !== SUPPORTED_HARNESS.commit) throw new Error(`unsupported DeepSeek Harness commit: ${config.expectedHarnessCommit}`)
     if (config.expectedHarnessPackageVersion !== SUPPORTED_HARNESS.packageVersion) throw new Error(`unsupported DeepSeek Harness package version: ${config.expectedHarnessPackageVersion}`)
@@ -333,10 +360,56 @@ function validateConfig(config, overrides) {
 function harnessDescriptor(config) {
   return {
     repository: SUPPORTED_HARNESS.repository,
-    commit: config.actualHarnessCommit,
+    commit: SUPPORTED_HARNESS.commit,
     packageVersion: config.actualHarnessPackageVersion,
     sessionFormatVersion: SUPPORTED_HARNESS.sessionFormatVersion,
   }
+}
+
+function defaultValidatorCommand(packageUrl = import.meta.url) {
+  return join(dirname(fileURLToPath(packageUrl)), 'bin', 'routecert-local-validator.js')
+}
+
+function defaultReceiptDir(packageUrl = import.meta.url) {
+  const packageDir = dirname(fileURLToPath(packageUrl))
+  const profileDir = inferProfileDir(packageDir)
+  if (!profileDir) return null
+  return join(profileDir, '.route-certificate')
+}
+
+function inferProfileDir(packageDir) {
+  let cursor = packageDir
+  for (let depth = 0; depth < 16; depth += 1) {
+    const base = dirname(cursor)
+    if (base === cursor) return null
+    if (basename(base) === 'node_modules') {
+      const parent = dirname(base)
+      const grandparent = dirname(parent)
+      if (basename(grandparent) === '.pnpm') return dirname(dirname(grandparent))
+      return parent
+    }
+    cursor = base
+  }
+  return null
+}
+
+function detectHarnessRuntime({ packageUrl = import.meta.url } = {}) {
+  const candidates = []
+  if (typeof process.argv[1] === 'string') candidates.push(resolve(dirname(process.argv[1]), '..', 'package.json'))
+  candidates.push(resolve(dirname(fileURLToPath(packageUrl)), '..', '@deepseek-ai', 'dsh', 'package.json'))
+  candidates.push(resolve(dirname(fileURLToPath(packageUrl)), '..', '..', '@deepseek-ai', 'dsh', 'package.json'))
+  for (const candidate of candidates) {
+    try {
+      if (!existsSync(candidate)) continue
+      const manifest = JSON.parse(readFileSync(candidate, 'utf8'))
+      if (manifest?.name === '@deepseek-ai/dsh' && typeof manifest.version === 'string') {
+        return { packageName: manifest.name, packageVersion: manifest.version, packageJson: candidate }
+      }
+    } catch {
+      // Try the next official package surface.
+    }
+  }
+  return { packageName: '@deepseek-ai/dsh', packageVersion: null, packageJson: null }
 }
 
 function buildPreflightRequest(config, session, endEvent, reason) {
@@ -372,7 +445,7 @@ function buildPreliminaryRequest(config, session, endEvent, snapshot) {
     turn: turnOrdinal(events, endEvent),
     turnEndSeq: endEvent.seq,
     turnEndTime: endEvent.time,
-    harnessReason: cloneJson(endEvent.data),
+    harnessReason: sanitizeTerminalReason(endEvent.data),
   }
   const eventRange = { fromSeq: events[0]?.seq ?? 0, throughSeq: endEvent.seq }
   const evidence = {
@@ -701,6 +774,15 @@ function createArtifactReader(config) {
   }
 }
 
+function isPathWithin(root, candidate, pathApi = pathModule) {
+  const relativePath = pathApi.relative(root, candidate)
+  return relativePath === '' || (
+    relativePath !== '..'
+    && !relativePath.startsWith(`..${pathApi.sep}`)
+    && !pathApi.isAbsolute(relativePath)
+  )
+}
+
 function collectArtifactCandidates(events) {
   const candidates = []
   for (const event of events) {
@@ -727,7 +809,7 @@ async function safeArtifactDescriptor(config, candidate, testHooks = {}) {
   } catch {
     return omittedArtifact(candidate, 'artifact_missing')
   }
-  if (!roots.some((root) => resolved === root || resolved.startsWith(`${root}/`))) return omittedArtifact(candidate, 'artifact_outside_allowlist')
+  if (!roots.some((root) => isPathWithin(root, resolved))) return omittedArtifact(candidate, 'artifact_outside_allowlist')
   if (typeof testHooks.afterCandidateRealpath === 'function') await testHooks.afterCandidateRealpath({ candidatePath, resolved, roots: [...roots] })
   const handle = await open(resolved, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch(() => null)
   if (!handle) return omittedArtifact(candidate, 'artifact_symlink_or_unopenable')
@@ -747,7 +829,7 @@ async function safeArtifactDescriptor(config, candidate, testHooks = {}) {
       return omittedArtifact(candidate, 'artifact_race_detected', before.size)
     }
     const stable = resolvedAfter === resolved
-      && roots.some((root) => resolvedAfter === root || resolvedAfter.startsWith(`${root}/`))
+      && roots.some((root) => isPathWithin(root, resolvedAfter))
       && bytes.length === before.size
       && sameFileSnapshot(before, handleAfter)
       && sameFileSnapshot(before, pathAfter)
@@ -805,10 +887,11 @@ function createSubprocessRunner(ctx, config) {
   const subprocess = ctx?.reflect && typeof ctx.reflect.get === 'function'
     ? ctx.reflect.get('subprocess')
     : ctx?.subprocess
-  if (!subprocess || !config.command) {
-    return async () => { throw new Error('subprocess service or command unavailable') }
+  if (!subprocess || typeof subprocess.spawn !== 'function' || !config.command) {
+    return createNodeSubprocessRunner(config)
   }
   return async ({ input, signal }) => {
+    await mkdir(config.outputDir, { recursive: true, mode: 0o700 })
     const handle = await subprocess.spawn({
       argv: [config.command, ...config.args],
       cwd: config.outputDir,
@@ -833,6 +916,49 @@ function createSubprocessRunner(ctx, config) {
       stderrTruncated: stderr.truncated,
     }
   }
+}
+
+function createNodeSubprocessRunner(config) {
+  return async ({ input, signal }) => await new Promise((resolve, reject) => {
+    mkdir(config.outputDir, { recursive: true, mode: 0o700 }).then(() => {
+    const child = spawn(config.command, config.args, {
+      cwd: config.outputDir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: scrubExplicitEnv({ PATH: process.env.PATH ?? '' }),
+    })
+    let stdout = Buffer.alloc(0)
+    let stderr = Buffer.alloc(0)
+    let stdoutTruncated = false
+    let stderrTruncated = false
+    const append = (current, chunk, stream) => {
+      const next = Buffer.concat([current, chunk])
+      if (next.length <= config.maxOutputBytes + 1) return next
+      if (stream === 'stdout') stdoutTruncated = true
+      else stderrTruncated = true
+      return next.subarray(0, config.maxOutputBytes + 1)
+    }
+    const abort = () => {
+      child.kill('SIGTERM')
+      setTimeout(() => child.kill('SIGKILL'), Math.min(1000, config.timeoutMs)).unref()
+    }
+    signal.addEventListener('abort', abort, { once: true })
+    child.once('error', reject)
+    child.stdout.on('data', chunk => { stdout = append(stdout, chunk, 'stdout') })
+    child.stderr.on('data', chunk => { stderr = append(stderr, chunk, 'stderr') })
+    child.once('close', (exitCode, childSignal) => {
+      signal.removeEventListener('abort', abort)
+      resolve({
+        exitCode,
+        signal: childSignal,
+        stdout: stdout.toString('utf8'),
+        stderr: stderr.toString('utf8'),
+        stdoutTruncated,
+        stderrTruncated,
+      })
+    })
+    child.stdin.end(input)
+    }).catch(reject)
+  })
 }
 
 async function readCollected(handle, stream) {
@@ -912,12 +1038,17 @@ export const __testing = {
   REQUEST_SCHEMA,
   RESPONSE_SCHEMA,
   RECEIPT_SCHEMA,
+  BUNDLED_POLICY_SPEC,
+  BUNDLED_POLICY_DIGEST,
+  sanitizeTerminalReason,
   buildPreliminaryRequest,
   finalizeRequest,
   validateResponse,
   validateTransportAndResponse,
   createFileReceiptStore,
   safeArtifactDescriptor,
+  isPathWithin,
+  pathApis: { posix: pathModule.posix, win32: pathModule.win32 },
   collectArtifactCandidates,
   canonicalString,
   digestJson,
@@ -926,6 +1057,10 @@ export const __testing = {
   validateConfig,
   harnessDescriptor,
   buildPreflightRequest,
+  defaultReceiptDir,
+  defaultValidatorCommand,
+  detectHarnessRuntime,
+  inferProfileDir,
   claimPath,
   symlink,
   unlink,

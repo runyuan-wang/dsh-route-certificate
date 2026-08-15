@@ -1,96 +1,78 @@
 # RouteCertificate DeepSeek Harness Adapter Contract v0
 
-Status: local community-plugin v0 contract, frozen before implementation. This is an adapter-owned contract because the generic RouteCertificate core has no stable DeepSeek Harness turn-validation operation. The generic public core remains advisory and source-bound; this adapter invokes an external validator over the schema below or records `indeterminate`.
+Status: installable community-plugin contract implemented for the inspected DeepSeek Harness rc.6 surface. The adapter is additive, raw-first, and advisory relative to Harness. Its bundled policy is a real but deliberately narrow structural policy; stronger semantic policies remain optional external validators.
 
-## Platform Compatibility
+## Compatibility
 
-- DeepSeek Harness source reviewed at commit `47f943859bef60e4160492346772ded9b24f765a`.
-- Reviewed source/package version: `0.1.0-rc.5`.
-- Public npm CLI latest/next was independently observed as `0.1.0-rc.6`; this package does not claim source-to-package correspondence or broad compatibility.
-- Supported Harness source commit is exact-match by default. Unsupported metadata fails closed at plugin load unless `allowUnsupportedHarness=true` is explicitly configured for local experimentation.
-- Active observe mode requires operator-supplied `actualHarnessCommit` and `actualHarnessPackageVersion`. The plugin validates those values against the expected pair but does **not** discover them from the running Harness process or package tree; they are explicit operator attestation, not independent runtime proof.
+- Source-verified review anchor: `deepseek-ai/deepseek-harness@47f943859bef60e4160492346772ded9b24f765a`.
+- Inspected official npm CLI: `@deepseek-ai/dsh@0.1.0-rc.6`.
+- Supported active runtime package version: `0.1.0-rc.6` only, unless `allowUnsupportedHarness=true` is explicitly set for local experimentation.
+- Active mode discovers the installed npm **package version**. The pinned commit is a source-review mapping corresponding to the inspected rc.6 surface, not a runtime-detected commit.
 
-## Invocation Seam
+## Invocation seam
 
-- Plugin form: prebuilt ESM Cordis plugin with `apply(ctx, config)`.
-- Bundle form: `package.json` declares `dsh.bundle.patch`; `cordis.patch.yml` inserts one unique row id, `route-certificate-deepseek-harness`.
-- Required services: `sessions`. Optional service use: `subprocess` if the official subprocess seam is available. Tests use a strictly injectable runner.
-- Triggers:
-  - live: post-commit `session/event` events where `event.type === "turn/end"`;
-  - cold/missed: idempotent history reconciliation on `session/created`.
-- Non-trigger: `agent/turn-stopping` is never used for validation.
+- Prebuilt ESM Cordis plugin with `apply(ctx, config)` and `dsh.bundle.patch`.
+- Required service: `sessions`; optional official `subprocess` seam, otherwise a bounded Node child process for the bundled validator.
+- Live trigger: committed `session/event` with `event.type === "turn/end"`.
+- Cold trigger: idempotent reconciliation on `session/created`.
+- `agent/turn-stopping` is not used.
 
-## Request Schema
+## Request
 
-The plugin writes exactly one canonical JSON request to the validator's stdin:
+Schema: `routecertificate.deepseek-harness.request/v1`.
 
-`schema = "routecertificate.deepseek-harness.request/v1"`
+- `requestId`: lowercase SHA-256 over canonical request material excluding `requestId`.
+- `harness`: repository, pinned source-review commit, detected package version, session-format version.
+- `subject`: session id, turn, terminal sequence/time, and only a bounded terminal summary (`kind`, optional finite `status`, optional stable non-secret `code`).
+- `evidence`: event range, immutable raw event prefix, recomputed prefix digest, final assistant text, and bounded artifact descriptors.
+- `policy`: policy id and policy digest.
 
-Required fields:
+Canonicalization is adapter-owned sorted-key JSON over UTF-8, not claimed as RFC 8785.
 
-- `requestId`: `sha256:` plus lowercase SHA-256 over canonical request material excluding `requestId`.
-- `harness`: `{ repository, commit, packageVersion, sessionFormatVersion }`.
-- `subject`: `{ sessionId, turn, turnEndSeq, turnEndTime, harnessReason }`.
-- `evidence`: `{ eventRange, events, sessionPrefixDigest, finalAssistantText, artifacts }`.
-- `policy`: `{ policyId, policyDigest }`.
+Default caps: 2,000 events; 8 MiB input; 1 MiB output; 32 artifacts; 16 MiB per artifact. Oversize or omitted evidence never becomes a pass.
 
-Canonicalization profile: adapter-owned `routecertificate-dsh-canonical-json-v1`, implemented as strict JSON with sorted object keys and SHA-256 over UTF-8 bytes. It is not claimed to be RFC 8785.
+## Response
 
-Caps:
+Schema: `routecertificate.result/v1`.
 
-- `maxEvents`: default 2000.
-- `maxInputBytes`: default 8388608.
-- `maxOutputBytes`: default 1048576.
-- `maxArtifactBytes`: default 16777216.
-- `maxArtifacts`: default 32.
-- Oversize request/evidence produces `indeterminate`; it is not silently truncated into a pass.
+Required binding: exact request id, evidence digest and policy digest. Outcome is `pass`, `fail`, or `indeterminate`; checks, optional bounded certificate, and bounded non-secret diagnostics are validated structurally. Exit code alone is never a pass signal.
 
-## Response Schema
+## Bundled terminal-envelope policy
 
-The validator must return JSON on stdout:
+- ID: `terminal-envelope-default`.
+- Digest: `sha256:d973daa08041bbe7423bd5602a629a7c87b28c692e5e04289a5c6291880f7f1d`.
+- Scope: only Harness terminal state and source-bound event envelope.
 
-`schema = "routecertificate.result/v1"`
+The validator recomputes request ID, event-prefix digest, event range, terminal event/sequence/time, terminal ordinal/reason summary, and artifact completeness.
 
-Required fields:
+- Valid complete `completed` terminal → structural `pass`.
+- Valid complete `error` terminal → structural `fail`.
+- Interrupted, aborted, disposed, max-token, unknown, or omitted-artifact cases → `indeterminate`.
+- Malformed or mismatched request/envelope binding → structural `fail`.
 
-- `requestId`: exact request id.
-- `outcome`: one of `pass`, `fail`, `indeterminate`.
-- `checks`: array of `{ id, outcome, evidence? }`, with outcome in the same enum.
-- `evidenceDigest`: exact request evidence digest.
-- `policyDigest`: exact policy digest.
-- `certificate`: optional object, bounded and strict JSON.
-- `diagnostics`: array of bounded non-secret strings or objects.
+Every certificate says `scope: terminal-envelope-only` and `semanticJudgment: false`. It does not establish answer truth, task success, semantic correctness, quality, safety, or production fitness.
 
-Exit code alone is never a pass signal. Nonzero, malformed, mismatched, timeout, or oversize output yields adapter `indeterminate`.
+## Idempotency and claims
 
-## Idempotency
+Stable receipt key binds session id, turn, terminal sequence, evidence digest and policy digest. Receipt writes preserve the first canonical value. Cross-instance claim ownership prevents duplicate validation; configuration is rejected unless `receiptClaimStaleMs > max(timeoutMs, receiptClaimWaitMs)`.
 
-Stable key:
+## Security and data boundaries
 
-`sha256(sessionId + "\n" + turn + "\n" + turnEndSeq + "\n" + evidenceDigest + "\n" + policyDigest)`
+- No certificate is appended to session logs or model prompts; there is no global gate.
+- Raw event/error objects stay only in bounded validator evidence. Persisted subjects omit messages, arbitrary nesting and secret-shaped data.
+- Child environment is scrubbed by default and forwards only explicit non-secret values.
+- Artifact paths are realpath-checked under component-aware active-platform allowlist roots before and after read, final-component `O_NOFOLLOW` is requested, bytes are bounded/hashed, and handle/path metadata is compared. This is best-effort race detection, not an `openat` hostile-concurrency guarantee.
 
-Receipt writes are idempotent upserts to adapter-owned JSON files outside the DSH session log. Duplicate `turn/end`, HMR replay, and cold reconciliation cannot create duplicate validator invocations after a receipt exists.
-
-## Security and Data Boundaries
-
-- No certificate content is appended to the DSH session log.
-- No certificate content is fed back into the model prompt.
-- No global tool gate or enforcement in v0.
-- Secrets are references only; config must not contain credential values.
-- Validator child environment is scrubbed by default and forwards only explicit non-secret entries.
-- Raw event/result/artifact inputs are copied immutably into the request or hashed before certification.
-- Adapter-owned receipts separate bounded user summary from raw diagnostics.
-- Artifact paths are realpath-checked under configured roots before open, final-component `O_NOFOLLOW` is requested, bytes are size-bounded and hashed, and handle/path/realpath metadata is compared again after the read. This is a best-effort path-stability check that detects the tested ancestor-directory rename+symlink swap, not a complete hostile-concurrency guarantee: Node's path-based API here does not provide a retained directory descriptor plus `openat`-style traversal, so an adversary able to replace ancestor directories concurrently remains outside the v0 guarantee.
-
-## Failure Semantics
+## Failure semantics
 
 Default mode is raw-first/fail-open relative to Harness:
 
-- Harness result is never suppressed, rewritten, duplicated, or delayed indefinitely.
-- Validator/plugin failures persist an `indeterminate` receipt where possible.
-- `session/flush` may await bounded pending work when `awaitOnFlush=true`; the listener catches validator failures and resolves unless `requireCertificate=true`.
-- Disposal/HMR stops new admission, aborts active validators, waits bounded `allSettled`, and leaves existing DSH session data untouched.
+- Harness result is never suppressed, rewritten, duplicated, or replaced.
+- Validator/plugin failures persist `indeterminate` receipts where possible.
+- Advisory listener/reconciliation dispatch catches terminal observer failures, including receipt-store failure, so they do not become unhandled rejections.
+- With `requireCertificate=true`, awaited seams retain failure propagation.
+- Disposal stops admission, aborts active validation and waits a bounded `allSettled` interval.
 
-## Fallback
+## Default installation
 
-If no validator command/runner is configured, the plugin loads only when `mode="disabled"`; active observe mode requires an explicit command or injected runner. This prevents fake integration. The local package tests use injected runners to prove the adapter contract.
+`mode: observe`, `command: null`, and `outputDir: null` resolve to the bundled validator and a profile-owned `.route-certificate` directory. External `command`, `policyId`, and `policyDigest` overrides are optional and must be changed together for a stronger policy.

@@ -1,91 +1,70 @@
 # dsh-route-certificate
 
-Experimental community RouteCertificate observer for the DeepSeek Harness developer preview. It watches durable terminal turns, invokes an operator-supplied external validator, and writes separate receipts without replacing the raw Harness result.
+Installable community RouteCertificate observer bundle for DeepSeek Harness users.
 
-> **Status:** advisory, disabled by default, not official DeepSeek software, and not published to npm. Use an isolated disposable Harness profile for testing.
+The plugin watches durable `turn/end` session events, writes separate RouteCertificate receipts, and never rewrites or suppresses the raw Harness result. The bundled default is immediately usable without a user-written validator: it certifies only the **Harness terminal state and source-bound event envelope**.
 
-## What is verified
+- `completed` + a valid, complete envelope → structural `pass`.
+- `error` + a valid, complete envelope → structural `fail`.
+- interrupted, aborted, disposed, max-token, unknown, or omitted-artifact cases → `indeterminate`.
 
-- The repository test suite passes **18/18** on the accepted package.
-- The bundle has been loaded through the official `dsh 0.1.0-rc.6` plugin/profile path in an isolated profile, both disabled and active, then removed with effective configuration restored byte-for-byte.
-- The active loader smoke used explicit **operator-supplied** runtime metadata only. It did not call a model, create a real provider session, or invoke a real RouteCertificate validator.
-- The reviewed Harness source was commit `47f943859bef60e4160492346772ded9b24f765a` (`0.1.0-rc.5`). The public CLI was separately observed at `0.1.0-rc.6`; source-to-package correspondence and broad rc.6 compatibility are **not proven**.
+This policy does **not** judge answer truth, semantic correctness, output quality, safety, task success, or production fitness. An external validator remains optional when an operator wants a stronger policy.
 
-This project does not claim truth, enforcement, quality improvement, token savings, production fitness, or official endorsement. Hashes and receipts bind inputs and outcomes; they do not prove that a result is correct.
+## Compatibility
 
-## Official Harness friend test (recommended)
+Tested against:
 
-For a friend who already has the official DeepSeek Harness developer-preview CLI, use its plugin manager directly. The CLI must also be able to invoke `pnpm`. Test in a **new disposable profile** first; plugin-manager commands can initialize or leave package-manager bookkeeping in that profile.
+- Source-verified mapping: `https://github.com/deepseek-ai/deepseek-harness`, commit `47f943859bef60e4160492346772ded9b24f765a`, corresponding to the inspected rc.6 package surface.
+- Official npm CLI: `@deepseek-ai/dsh@0.1.0-rc.6`.
+- Session format: `0`.
 
-```bash
-git clone https://github.com/runyuan-wang/dsh-route-certificate.git
-cd dsh-route-certificate
-npm pack
+Active mode discovers the running `@deepseek-ai/dsh` **package version** from the launcher/package installation surface and refuses unsupported versions by default. The source commit is a pinned review anchor; it is not claimed to be runtime-detected from the npm installation.
 
-PROFILE="routecert-friend-$(date +%s)"
-TGZ="$(pwd)/dsh-route-certificate-0.0.1-local.20260814.1.tgz"
+## Install
 
-dsh plugin --profile "$PROFILE" add "$TGZ"
+Choose the existing Harness profile you want to observe, then install the published prebuilt package directly with the official plugin command:
+
+```sh
+PROFILE=tui
+PACKAGE_URL=https://raw.githubusercontent.com/runyuan-wang/dsh-route-certificate/main/dist/dsh-route-certificate-0.0.3-universal.20260815.tgz
+dsh plugin --profile "$PROFILE" add -w "$PACKAGE_URL"
 dsh --profile "$PROFILE" --dump-config
-# Verify that dsh-route-certificate is present and mode is disabled.
-
-dsh plugin --profile "$PROFILE" remove dsh-route-certificate
 ```
 
-After removal, inspect the disposable profile before deleting it. The official remove path may leave `pnpm` bookkeeping; remove only the profile created for this test, never an existing user profile. If a friend chooses an existing profile instead, back it up first and compare the effective configuration before/after.
+The plugin owns receipts under that profile directory by default:
 
-## Repository self-test (optional for code reviewers)
-
-The deterministic repository suite requires Node.js `>=22.19.0` and npm:
-
-```bash
-npm ci
-npm test
-# Expected: 18 tests passed
+```text
+$DSH_HOME/profiles/<profile>/.route-certificate/receipts/
 ```
 
-The suite exercises successful receipts, cold reconciliation, timeout and malformed-validator handling, response/privacy validation, artifact bounds/races, disposal, stale claims, and two-instance idempotency. It validates the package contract; it does not substitute for a real provider/session/validator run.
+Each receipt includes explicit `terminal-envelope-only` scope and `semanticJudgment: false`. To remove the plugin:
 
-## Disabled-first activation model
+```sh
+dsh plugin --profile "$PROFILE" remove -w dsh-route-certificate
+dsh --profile "$PROFILE" --dump-config
+```
 
-The shipped [`cordis.patch.yml`](./cordis.patch.yml) sets `mode: disabled`. In that state the plugin is a no-op and needs no runtime attestation or validator.
+## Optional stronger validator
 
-Active `mode: observe` requires all of the following:
+Patch the installed row by id only when you intentionally want a stronger local policy:
 
-- an absolute adapter-owned `outputDir`;
-- an explicit validator `command` (or an injected runner in tests);
-- an explicit `policyDigest`;
-- operator-supplied `actualHarnessCommit` and `actualHarnessPackageVersion`;
-- explicit `artifactRoots` if artifacts may be read.
+```yaml
+- id: route-certificate-deepseek-harness
+  config:
+    mode: observe
+    command: /absolute/path/to/validator
+    args: []
+    outputDir: null
+    policyId: your-policy-id
+    policyDigest: sha256:REPLACE_WITH_YOUR_POLICY_DIGEST
+```
 
-See [`examples/observe.patch.template.yml`](./examples/observe.patch.template.yml). It is a reference template, not automatically loaded. Replace every placeholder with real local values. Do **not** copy the acceptance smoke's self-attested metadata as if the plugin discovered it. If your actual runtime differs from the reviewed rc.5 pair, the default is to refuse active mode. `allowUnsupportedHarness: true` is only an explicit local experimentation override; it does not establish compatibility.
+Override `command`, `policyId`, and `policyDigest` together. `outputDir: null` keeps the profile-owned default. Set an absolute `outputDir` only when you intentionally want receipts elsewhere.
 
-The validator protocol and exact lifecycle contract are in [`CONTRACT.md`](./CONTRACT.md). This repository does not ship a validator implementation.
+## Failure and data boundary
 
-## Behavior and boundaries
-
-The plugin:
-
-- observes durable post-commit `turn/end` events;
-- reconciles missed terminal history on `session/created`;
-- sends a bounded canonical request to an explicit external validator;
-- stores adapter-owned receipts outside the Harness session log;
-- never feeds certificate content back into the model;
-- never suppresses, rewrites, or replaces the raw Harness result.
-
-Validator timeout, nonzero exit, malformed/mismatched output, unsupported metadata, oversize evidence, or plugin failure becomes `indeterminate` where a receipt can be written. `requireCertificate` remains `false` in the shipped patch so certification failure does not block the Harness result.
-
-Artifact reads are allowlisted and bounded. They use realpath checks, final-component `O_NOFOLLOW`, and post-read handle/path/realpath comparisons. This detects the tested ancestor-directory rename-plus-symlink swap, but it is still **best effort**: Node's path API here does not retain a directory descriptor or provide an `openat`-style traversal, so hostile concurrent ancestor replacement is outside the v0 guarantee.
-
-## Repository map
-
-- `index.js` — Cordis plugin and observer implementation
-- `testing.js` — narrow test helpers
-- `cordis.patch.yml` — disabled-default Harness bundle patch
-- `CONTRACT.md` — request/response, lifecycle, failure, and security contract
-- `examples/observe.patch.template.yml` — placeholder-only active-mode reference
-- `tests/` — 18 deterministic regressions
+Validation and receipt work is additive. In advisory mode, validator or receipt-persistence failure cannot replace the raw Harness result or create an unhandled observer rejection. Raw terminal error objects stay in the validator's bounded evidence input; the persisted receipt subject keeps only an allowlisted terminal kind plus an optional bounded status/stable code.
 
 ## License
 
-Apache-2.0. See [`LICENSE`](./LICENSE).
+Apache-2.0. This package is not official DeepSeek software.
