@@ -10,6 +10,23 @@ The plugin watches durable `turn/end` session events, writes separate RouteCerti
 
 This policy does **not** judge answer truth, semantic correctness, output quality, safety, task success, or production fitness. An external validator remains optional when an operator wants a stronger policy.
 
+## 中文介绍
+
+**RouteCertificate × DeepSeek Harness** 是一个可直接安装的 Harness 社区插件。它在任务结束后旁路生成一份结构化完成凭证，把请求、执行前缀、终止事件、结果范围和产物指纹绑定起来，帮助用户或上层 Agent 核验：任务是否到达了可解释的终态，交回的是否仍是被观察到的那份结果与产物。
+
+### 核心优势
+
+1. **零构建直接安装**：普通用户不需要 clone、build，也不需要自己编写 validator；使用官方 `dsh plugin` 命令即可安装预构建包。
+2. **原始结果优先**：插件只增加独立回执，不改写、不隐藏、不替换 Harness 的原始结果和原始终止事件。
+3. **三态判断更诚实**：完整正常终态记为结构 `pass`，明确错误终态记为结构 `fail`；中断、信息不足或无法可靠判断时记为 `indeterminate`，不把未知包装成成功。
+4. **请求与产物可追溯绑定**：回执重新计算请求、前缀、终态、事件范围和产物指纹，便于后续发现不一致、错配或过期声明。
+5. **观察失败不阻断原任务**：在默认 advisory 模式下，即使 validator 或回执写入失败，插件也会回落到原始 Harness 结果，不把观察器故障变成任务故障。
+6. **可完整撤除**：使用官方卸载命令即可移除插件；已验证卸载后不会残留插件行、包目录或锁文件条目。
+
+它适合多 Agent 长任务、代码施工、研究任务和审计交接。它证明的是**终态与来源绑定的结构完整性**，不证明答案语义正确、任务质量、安全性或生产适用性；需要更强判断时，仍可接入独立 validator。
+
+一句话介绍：**给 DeepSeek Harness 的每次任务加一张不篡改原结果、可核验、可撤除的完成凭证。**
+
 ## Compatibility
 
 Tested against:
