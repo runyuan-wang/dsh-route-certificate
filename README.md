@@ -13,40 +13,38 @@ Experimental community RouteCertificate observer for the DeepSeek Harness develo
 
 This project does not claim truth, enforcement, quality improvement, token savings, production fitness, or official endorsement. Hashes and receipts bind inputs and outcomes; they do not prove that a result is correct.
 
-## Fastest friend check
+## Official Harness friend test (recommended)
 
-Requirements for the repository tests: Node.js `>=22.19.0` and npm.
+For a friend who already has the official DeepSeek Harness developer-preview CLI, use its plugin manager directly. The CLI must also be able to invoke `pnpm`. Test in a **new disposable profile** first; plugin-manager commands can initialize or leave package-manager bookkeeping in that profile.
 
 ```bash
 git clone https://github.com/runyuan-wang/dsh-route-certificate.git
 cd dsh-route-certificate
-npm ci
-npm test
-# Expected: 18 tests passed
-
 npm pack
-# Produces dsh-route-certificate-0.0.1-local.20260814.1.tgz
-```
 
-`npm test` is the primary reproducible check. It exercises successful receipts, cold reconciliation, timeout and malformed-validator handling, response/privacy validation, artifact bounds/races, disposal, stale claims, and two-instance idempotency.
-
-## Optional official Harness smoke
-
-The official plugin-manager path additionally requires a separately installed DeepSeek Harness developer-preview CLI and `pnpm` available to that CLI. Use a **new disposable profile**; plugin-manager commands can initialize or leave package-manager bookkeeping in the profile. Never point this smoke at a profile you cannot safely restore.
-
-```bash
-# Run from this repository after npm pack. Choose a new disposable name.
 PROFILE="routecert-friend-$(date +%s)"
 TGZ="$(pwd)/dsh-route-certificate-0.0.1-local.20260814.1.tgz"
 
 dsh plugin --profile "$PROFILE" add "$TGZ"
 dsh --profile "$PROFILE" --dump-config
-# The shipped patch must show mode: disabled.
+# Verify that dsh-route-certificate is present and mode is disabled.
 
 dsh plugin --profile "$PROFILE" remove dsh-route-certificate
 ```
 
-After removal, inspect the disposable profile before deleting it. The official remove path may leave `pnpm` bookkeeping; remove only the profile you created for this smoke, never an existing user profile.
+After removal, inspect the disposable profile before deleting it. The official remove path may leave `pnpm` bookkeeping; remove only the profile created for this test, never an existing user profile. If a friend chooses an existing profile instead, back it up first and compare the effective configuration before/after.
+
+## Repository self-test (optional for code reviewers)
+
+The deterministic repository suite requires Node.js `>=22.19.0` and npm:
+
+```bash
+npm ci
+npm test
+# Expected: 18 tests passed
+```
+
+The suite exercises successful receipts, cold reconciliation, timeout and malformed-validator handling, response/privacy validation, artifact bounds/races, disposal, stale claims, and two-instance idempotency. It validates the package contract; it does not substitute for a real provider/session/validator run.
 
 ## Disabled-first activation model
 
