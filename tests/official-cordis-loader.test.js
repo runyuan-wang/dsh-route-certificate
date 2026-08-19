@@ -9,8 +9,8 @@ import * as plugin from '../index.js'
 
 const CONFIG = {
   mode: 'disabled',
-  actualHarnessCommit: '47f943859bef60e4160492346772ded9b24f765a',
-  actualHarnessPackageVersion: '0.1.0-rc.6',
+  actualHarnessCommit: '99f6f02fecdb7dff40c3fbc9470f5907c29f74ca',
+  actualHarnessPackageVersion: '0.1.0-rc.7',
   disposeTimeoutMs: 20,
 }
 
@@ -47,14 +47,14 @@ test('official Cordis registry loads the plugin with sessions only', async () =>
   await Promise.race([ctx.fiber.dispose(), timeout(1000, 'Cordis root dispose')])
 })
 
-test('official Cordis registry activates the rc.6 observer with a profile-owned output', async () => {
+test('official Cordis registry activates the rc.7 observer with a profile-owned output', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-route-cert-cordis-active-'))
   const ctx = new Context()
   try {
     const fiber = ctx.plugin(plugin, {
       mode: 'observe',
       outputDir: root,
-      actualHarnessPackageVersion: '0.1.0-rc.6',
+      actualHarnessPackageVersion: '0.1.0-rc.7',
       disposeTimeoutMs: 20,
     })
     const removeSessions = ctx.provide('sessions', {
@@ -66,7 +66,7 @@ test('official Cordis registry activates the rc.6 observer with a profile-owned 
     for (let attempt = 0; attempt < 100 && fiber.state !== 2; attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10))
     }
-    assert.equal(fiber.state, 2, 'active rc.6 observer must activate')
+    assert.equal(fiber.state, 2, 'active rc.7 observer must activate')
     assert.deepEqual(plugin.inject, ['sessions'])
     await Promise.race([fiber.dispose(), timeout(1000, 'active Cordis plugin dispose')])
     removeSessions()

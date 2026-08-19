@@ -1,13 +1,13 @@
 # RouteCertificate DeepSeek Harness Adapter Contract v0
 
-Status: installable community-plugin contract implemented for the inspected DeepSeek Harness rc.6 surface. The adapter is additive, raw-first, and advisory relative to Harness. Its bundled policy is a real but deliberately narrow structural policy; stronger semantic policies remain optional external validators.
+Status: installable community-plugin contract implemented for the inspected DeepSeek Harness rc.7 surface. The adapter is additive, raw-first, and advisory relative to Harness. Its bundled policy is a real but deliberately narrow structural policy; stronger semantic policies remain optional external validators.
 
 ## Compatibility
 
-- Source-verified review anchor: `deepseek-ai/deepseek-harness@47f943859bef60e4160492346772ded9b24f765a`.
-- Inspected official npm CLI: `@deepseek-ai/dsh@0.1.0-rc.6`.
-- Supported active runtime package version: `0.1.0-rc.6` only, unless `allowUnsupportedHarness=true` is explicitly set for local experimentation.
-- Active mode discovers the installed npm **package version**. The pinned commit is a source-review mapping corresponding to the inspected rc.6 surface, not a runtime-detected commit.
+- Source-verified review anchor: `deepseek-ai/deepseek-harness@99f6f02fecdb7dff40c3fbc9470f5907c29f74ca`.
+- Inspected official npm CLI: `@deepseek-ai/dsh@0.1.0-rc.7`.
+- Supported active runtime package version: `0.1.0-rc.7` only, unless `allowUnsupportedHarness=true` is explicitly set for local experimentation.
+- Active mode discovers the installed npm **package version**. The pinned commit is a source-review mapping corresponding to the inspected rc.7 surface, not a runtime-detected commit.
 
 ## Invocation seam
 
