@@ -60,17 +60,17 @@ test('automatic runtime detection reads the installed official dsh package surfa
     const dshRoot = join(root, 'profiles', 'routecert', 'node_modules', '@deepseek-ai', 'dsh')
     await mkdir(packageRoot, { recursive: true })
     await mkdir(dshRoot, { recursive: true })
-    await writeFile(join(dshRoot, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.0-rc.6' }))
+    await writeFile(join(dshRoot, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.0-rc.7' }))
     const packageUrl = new URL(`file://${join(packageRoot, 'index.js')}`).href
     const runtime = __testing.detectHarnessRuntime({ packageUrl })
-    assert.equal(runtime.packageVersion, '0.1.0-rc.6')
+    assert.equal(runtime.packageVersion, '0.1.0-rc.7')
     assert.equal(__testing.defaultReceiptDir(packageUrl), join(root, 'profiles', 'routecert', '.route-certificate'))
     const cfg = __testing.normalizeConfig({
       mode: 'observe',
       policyDigest: 'sha256:2222222222222222222222222222222222222222222222222222222222222222',
     }, { packageUrl })
     assert.equal(cfg.outputDir, join(root, 'profiles', 'routecert', '.route-certificate'))
-    assert.equal(cfg.actualHarnessPackageVersion, '0.1.0-rc.6')
+    assert.equal(cfg.actualHarnessPackageVersion, '0.1.0-rc.7')
     const pnpmPackageUrl = new URL(`file://${join(root, 'profiles', 'routecert', 'node_modules', '.pnpm', 'dsh-route-certificate@file+artifact', 'node_modules', 'dsh-route-certificate', 'index.js')}`).href
     assert.equal(__testing.defaultReceiptDir(pnpmPackageUrl), join(root, 'profiles', 'routecert', '.route-certificate'))
   } finally {
@@ -86,7 +86,7 @@ test('observe mode fails closed when official dsh package version is unsupported
         mode: 'observe',
         outputDir: root,
         policyDigest: 'sha256:2222222222222222222222222222222222222222222222222222222222222222',
-        actualHarnessPackageVersion: '0.1.0-rc.7',
+        actualHarnessPackageVersion: '0.1.0-rc.6',
       }, { runner: async () => ({}) }),
       /unsupported actual DeepSeek Harness package version/i,
     )

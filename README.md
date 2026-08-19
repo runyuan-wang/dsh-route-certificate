@@ -33,12 +33,12 @@ This policy does **not** judge answer truth, semantic correctness, output qualit
 
 ### 围绕核心的工程特性
 
-1. **零构建直接安装**：普通用户不需要 clone、build，也不需要自己编写 validator；使用官方 `dsh plugin` 命令即可安装预构建包。
+1. **零构建直接安装**：普通用户不需要 clone、build，也不需要自己编写 validator；使用官方 `dsh plugin` 命令即可从固定公开 Commit 安装该包。
 2. **原始结果优先**：插件只增加独立回执，不改写、不隐藏、不替换 Harness 的原始结果和原始终止事件。
 3. **三态判断更诚实**：完整正常终态记为结构 `pass`，明确错误终态记为结构 `fail`；中断、信息不足或无法可靠判断时记为 `indeterminate`，不把未知包装成成功。
 4. **请求与产物可追溯绑定**：回执重新计算请求、前缀、终态、事件范围和产物指纹，便于后续发现不一致、错配或过期声明。
 5. **观察失败不阻断原任务**：在默认 advisory 模式下，即使 validator 或回执写入失败，插件也会回落到原始 Harness 结果，不把观察器故障变成任务故障。
-6. **可完整撤除**：使用官方卸载命令即可移除插件；已验证卸载后不会残留插件行、包目录或锁文件条目。
+6. **可完整撤除**：使用官方卸载命令即可移除插件；卸载后应按安装指南核对插件行、包目录和锁文件条目均已移除。
 
 它适合多个子 Agent 并行或串行施工、研究和审计后再由上层 Agent 汇总的任务。它证明的是**终态与来源绑定的结构完整性**，不证明答案语义正确、任务质量、安全性或生产适用性；需要更强判断时，仍可接入独立 validator。
 
@@ -48,22 +48,34 @@ This policy does **not** judge answer truth, semantic correctness, output qualit
 
 Tested against:
 
-- Source-verified mapping: `https://github.com/deepseek-ai/deepseek-harness`, commit `47f943859bef60e4160492346772ded9b24f765a`, corresponding to the inspected rc.6 package surface.
-- Official npm CLI: `@deepseek-ai/dsh@0.1.0-rc.6`.
+- Source-verified mapping: `https://github.com/deepseek-ai/deepseek-harness`, commit `99f6f02fecdb7dff40c3fbc9470f5907c29f74ca`, corresponding to the inspected rc.7 package surface.
+- Official npm CLI: `@deepseek-ai/dsh@0.1.0-rc.7`.
 - Session format: `0`.
 
 Active mode discovers the running `@deepseek-ai/dsh` **package version** from the launcher/package installation surface and refuses unsupported versions by default. The source commit is a pinned review anchor; it is not claimed to be runtime-detected from the npm installation.
 
+## Compatibility, dependencies, and permissions
+
+- **DSH and Profile:** supports `@deepseek-ai/dsh@0.1.0-rc.7` and session format `0` by default. Install it only into an existing Profile that provides the DSH `sessions` service. It does not add or replace an official `@deepseek-ai/*` component.
+- **Node.js and system:** requires Node.js `>=22.19.0`. The candidate has been mechanically tested on macOS 14.4.1; Linux and Windows runtime installation and behavior have not been validated and remain unknown.
+- **Runtime dependencies:** uses DSH session events, `@deepseek-ai/schemastery`, and—when available—the official DSH `subprocess` service. Installation through the official DSH CLI requires GitHub/package-network access and `pnpm`.
+- **File access:** reads the installed DSH package manifest, the bounded current-session event prefix, and only artifact files inside operator-configured absolute allowlist roots. It writes private receipt/claim JSON files under the Profile-owned `.route-certificate` directory by default, or an explicitly configured absolute output directory.
+- **Command access:** the default validator is the bundled Node executable. Validation runs through the official `subprocess` service when available or a bounded Node child process otherwise. If an operator configures another validator, the plugin can launch that selected executable with the configured arguments; shell command strings are rejected.
+- **Network and credentials:** the runtime source performs no direct network request and does not request or persist credentials. It still runs with the DSH process's authority and can inspect bounded session/artifact evidence, so sensitive task content should be treated as visible to the plugin and to any operator-configured validator. Persisted receipts retain only bounded structural findings rather than the raw event/artifact payload.
+- **Primary risks:** local receipt writes, bounded session/artifact reads, validator process execution, and resource use during validation. RouteCertificate is advisory and additive: validator or receipt failure does not replace the raw Harness result, and a receipt is not a safety or semantic-correctness verdict.
+
 ## Install
 
-Choose the existing Harness profile you want to observe, then install the published prebuilt package directly with the official plugin command:
+Choose the existing Harness profile you want to observe, then install a fixed public GitHub commit with the official plugin command. Replace `<fixed-public-commit>` with the reviewed commit that contains this package version; do not use a floating branch or raw-main archive for store review.
 
 ```sh
 PROFILE=tui
-PACKAGE_URL=https://raw.githubusercontent.com/runyuan-wang/dsh-route-certificate/main/dist/dsh-route-certificate-0.0.3-universal.20260815.tgz
-dsh plugin --profile "$PROFILE" add -w "$PACKAGE_URL"
+PACKAGE_SPEC=git+https://github.com/runyuan-wang/dsh-route-certificate.git#<fixed-public-commit>
+dsh plugin --profile "$PROFILE" add "$PACKAGE_SPEC"
 dsh --profile "$PROFILE" --dump-config
 ```
+
+The official rc.7 `dsh plugin` command forwards its remaining arguments to `pnpm` inside the profile directory, then reconciles installed packages that declare `dsh.bundle.patch` into the profile layer list. This package is prepared as a DSH-Store candidate, but it is not claimed to be listed in DSH-Store.
 
 The plugin owns receipts under that profile directory by default:
 

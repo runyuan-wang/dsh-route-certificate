@@ -14,9 +14,9 @@ export const inject = ['sessions']
 
 const SUPPORTED_HARNESS = Object.freeze({
   repository: 'https://github.com/deepseek-ai/deepseek-harness',
-  commit: '47f943859bef60e4160492346772ded9b24f765a',
-  packageVersion: '0.1.0-rc.6',
-  packageVersions: ['0.1.0-rc.6'],
+  commit: '99f6f02fecdb7dff40c3fbc9470f5907c29f74ca',
+  packageVersion: '0.1.0-rc.7',
+  packageVersions: ['0.1.0-rc.7'],
   sessionFormatVersion: 0,
 })
 

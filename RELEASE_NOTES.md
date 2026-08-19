@@ -1,5 +1,12 @@
 # Release Notes
 
+## 0.0.4
+
+- Maintenance update for the official `@deepseek-ai/dsh@0.1.0-rc.7` package surface.
+- Updates the source-review anchor to `deepseek-ai/deepseek-harness@99f6f02fecdb7dff40c3fbc9470f5907c29f74ca` after verifying the plugin-used CLI, app-boot, session, and subprocess seam files are unchanged from the previous reviewed anchor.
+- Keeps the existing terminal-envelope-only observer behavior and claims unchanged.
+- Uses a semantic package version and fixed-Git-commit installation guidance for DSH-Store candidacy. This does not claim an existing DSH-Store listing.
+
 ## 0.0.3-universal.20260815
 
 - Ships as a prebuilt npm tarball installable through the official `dsh plugin --profile <name> add -w <tgz-or-package-spec>` path.

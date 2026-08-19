@@ -1,6 +1,6 @@
 {
   "name": "dsh-route-certificate",
-  "version": "0.0.3-universal.20260815",
+  "version": "0.0.4",
   "description": "Installable RouteCertificate advisory observer bundle for DeepSeek Harness users.",
   "type": "module",
   "main": "./index.js",
